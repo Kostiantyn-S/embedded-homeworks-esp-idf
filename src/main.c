@@ -4,9 +4,12 @@
 #include <stdatomic.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
+#include <esp_timer.h>
 
 #define BUTTON_GPIO 4
 volatile int counter = 0;
+volatile int64_t lastAcceptedTime;
+volatile bool eventFlag;
 static const char *TAG = "BUTTON";
 
 gpio_config_t io_conf = {
@@ -18,22 +21,31 @@ gpio_config_t io_conf = {
 };
 
 void IRAM_ATTR button_handler(void* arg) {
-    atomic_fetch_add(&counter, 1);
+    eventFlag = true;
 }
 
 void app_main() {
     gpio_config(&io_conf);
     gpio_install_isr_service(0);
     gpio_isr_handler_add(BUTTON_GPIO, button_handler, NULL);
-    int previous_counter = atomic_load(&counter);
+
+    int64_t now = esp_timer_get_time();
+    eventFlag = false;
+    lastAcceptedTime = now;
 
     while (true) {
-        int current = atomic_load(&counter);
+        now = esp_timer_get_time();
 
-        if (previous_counter != current) {
-            ESP_LOGI(TAG, "Counter: %d", current);
-            previous_counter = current;
+        if (eventFlag) {
+            eventFlag = false;
+
+            if (now - lastAcceptedTime >= (50000)) {
+                lastAcceptedTime = now;
+                atomic_fetch_add(&counter, 1);
+                ESP_LOGI(TAG, "Counter: %d", atomic_load(&counter));
+            }
         }
+        
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
