@@ -17,7 +17,7 @@ gpio_config_t io_conf = {
     .mode = GPIO_MODE_INPUT,
     .pull_up_en = GPIO_PULLUP_ENABLE,
     .pull_down_en = GPIO_PULLDOWN_DISABLE,
-    .intr_type = GPIO_INTR_NEGEDGE,
+    .intr_type = GPIO_INTR_ANYEDGE,
 };
 
 void IRAM_ATTR button_handler(void* arg) {
@@ -40,9 +40,11 @@ void app_main() {
             eventFlag = false;
 
             if (now - lastAcceptedTime >= (50000)) {
-                lastAcceptedTime = now;
-                atomic_fetch_add(&counter, 1);
-                ESP_LOGI(TAG, "Counter: %d", atomic_load(&counter));
+                if (gpio_get_level(BUTTON_GPIO) == 0) {
+                    lastAcceptedTime = now;
+                    atomic_fetch_add(&counter, 1);
+                    ESP_LOGI(TAG, "Counter: %d", atomic_load(&counter));
+                }
             }
         }
         
