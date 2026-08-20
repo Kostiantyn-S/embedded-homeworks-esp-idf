@@ -1,61 +1,117 @@
 #include <driver/gpio.h>
-#include <esp_attr.h>
-#include <esp_log.h>
-#include <stdatomic.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <esp_timer.h>
+#include "led.h"
+#include "config.h"
+#include "button.h"
 
-#define FAN_GPIO 4
-static const char *TAG = "FAN";
+typedef enum {
+    GREEN_STATE,
+    GREEN_BLINK_STATE,
+    YELLOW_STATE,
+    RED_STATE,
+    RED_AND_YELLOW_STATE,
+    YELLOW_BLINK
+} TrafficLightsState;
 
-#define CYCLE_INTERVAL_US       (10ULL * 1000000ULL)
-#define ON_DURATION_US          (3ULL * 1000000ULL)
-#define MAX_SAFE_ON_DURATION_US (ON_DURATION_US + 5000000ULL)
+static TrafficLightsState current_state;
+static esp_timer_handle_t cycle_timer;
+static esp_timer_handle_t green_blink_timer;
+static bool green_blink_state = false;
+static esp_timer_handle_t yellow_blink_timer;
+static bool yellow_blink_flag = false;
+static bool yellow_blink_state = false;
 
-esp_timer_handle_t off_timer;
-esp_timer_handle_t cycle_timer;
-esp_timer_handle_t safety_off_timer;
-
-void safety_off_callback(void* arg) {
-    if (gpio_get_level(FAN_GPIO) == 1) {
-        gpio_set_level(FAN_GPIO, 0);
-        ESP_LOGW(TAG, "SAFETY WATCHDOG: Fan OFF!");
-    }
+void set_leds(bool red, bool yellow, bool green) {
+    gpio_set_level(RED_LED_PIN_4, red);
+    gpio_set_level(YELLOW_LED_PIN_5, yellow);
+    gpio_set_level(GREEN_LED_PIN_6, green);
 }
 
-void off_timer_callback(void* arg) {
-    gpio_set_level(FAN_GPIO, 0);
-    ESP_LOGI(TAG, "Fan OFF");
+void set_yellow_blink_state() {
+    if (yellow_blink_flag) {
+        current_state = YELLOW_BLINK;
+        esp_timer_stop(cycle_timer);
+        if (esp_timer_is_active(green_blink_timer)) {
+            esp_timer_stop(green_blink_timer);
+        }
+
+        set_leds(false, false, false);
+        yellow_blink_state = false;
+        esp_timer_start_periodic(yellow_blink_timer, YELLOW_BLINK_INTERVAL_US);
+    } else {
+        esp_timer_stop(yellow_blink_timer);
+        current_state = GREEN_STATE;
+        esp_timer_start_once(cycle_timer, 0);
+    }
 }
 
 void cycle_timer_callback(void* arg) {
-    if (esp_timer_is_active(off_timer)) {
-        ESP_LOGW(TAG, "off_timer already active");
-        return;
+    uint64_t next_interval_us = 0;
+
+    switch (current_state) {
+        case GREEN_STATE:
+            set_leds(false, false, true);
+            current_state = GREEN_BLINK_STATE;
+            next_interval_us = GREEN_DURATION_US;
+            break;
+
+        case GREEN_BLINK_STATE:
+            set_leds(false, false, false);
+            green_blink_state = false;
+            esp_timer_start_periodic(green_blink_timer, GREEN_BLINK_INTERVAL_US);
+            current_state = YELLOW_STATE;
+            next_interval_us = GREEN_BLINK_DURATION_US;
+            break;
+
+        case YELLOW_STATE:
+            esp_timer_stop(green_blink_timer);
+            set_leds(false, true, false);
+            current_state = RED_STATE;
+            next_interval_us = YELLOW_DURATION_US;
+            break;
+
+        case RED_STATE:
+            set_leds(true, false, false);
+            current_state = RED_AND_YELLOW_STATE;
+            next_interval_us = RED_DURATION_US;
+            break;
+
+        case RED_AND_YELLOW_STATE:
+            set_leds(true, true, false);
+            current_state = GREEN_STATE;
+            next_interval_us = RED_AND_YELLOW_DURATION_US;
+            break;
+
+        case YELLOW_BLINK:
+            break;
     }
 
-    gpio_set_level(FAN_GPIO, 1);
-    ESP_LOGI(TAG, "Fan ON");
-    esp_timer_start_once(off_timer, ON_DURATION_US);
-    esp_timer_start_once(safety_off_timer, MAX_SAFE_ON_DURATION_US);
+    esp_timer_start_once(cycle_timer, next_interval_us);
+}
+
+void green_blink_timer_callback(void* arg) {
+    green_blink_state = !green_blink_state;
+    gpio_set_level(GREEN_LED_PIN_6, green_blink_state);
+}
+
+void yellow_blink_timer_callback(void* arg) {
+    yellow_blink_state = !yellow_blink_state;
+    gpio_set_level(YELLOW_LED_PIN_5, yellow_blink_state);
 }
 
 void app_main() {
-    gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << FAN_GPIO),
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
-    };
-    gpio_config(&io_conf);
+    Led red_led;
+    led_init(&red_led, RED_LED_PIN_4);
 
-    const esp_timer_create_args_t off_timer_args = {
-        .callback = &off_timer_callback,
-        .name = "off_timer"
-    };
-    esp_timer_create(&off_timer_args, &off_timer);
+    Led yellow_led;
+    led_init(&yellow_led, YELLOW_LED_PIN_5);
+
+    Led green_led;
+    led_init(&green_led, GREEN_LED_PIN_6);
+
+    current_state = GREEN_STATE;
 
     const esp_timer_create_args_t cycle_timer_args = {
         .callback = &cycle_timer_callback,
@@ -63,11 +119,29 @@ void app_main() {
     };
     esp_timer_create(&cycle_timer_args, &cycle_timer);
 
-    const esp_timer_create_args_t safety_off_timer_args = {
-        .callback = &safety_off_callback,
-        .name = "safety_off_timer"
+    const esp_timer_create_args_t green_blink_timer_args = {
+        .callback = &green_blink_timer_callback,
+        .name = "green_blink_timer"
     };
-    esp_timer_create(&safety_off_timer_args, &safety_off_timer);
+    esp_timer_create(&green_blink_timer_args, &green_blink_timer);
 
-    esp_timer_start_periodic(cycle_timer, CYCLE_INTERVAL_US);
+    const esp_timer_create_args_t yellow_blink_timer_args = {
+        .callback = &yellow_blink_timer_callback,
+        .name = "yellow_blink_timer"
+    };
+    esp_timer_create(&yellow_blink_timer_args, &yellow_blink_timer);
+
+    esp_timer_start_once(cycle_timer, 0);
+
+    Button btn;
+    button_init(&btn, BUTTON_PIN);
+
+    while (true) {
+        if (button_update(&btn)) {
+            yellow_blink_flag = !yellow_blink_flag;
+            set_yellow_blink_state();
+        }
+        
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
 }
