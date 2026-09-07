@@ -1,47 +1,63 @@
 #include <stdio.h>
 #include <esp_adc/adc_oneshot.h>
-#include <esp_adc/adc_cali.h>
-#include <esp_adc/adc_cali_scheme.h>
 #include <esp_timer.h>
-#include <esp_log.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <cmath>
+#include <driver/gpio.h>
 
 #include "config.h"
 
-static const char *TAG = "ADC_CAL";
-
 static adc_oneshot_unit_handle_t adc_handle;
-static adc_cali_handle_t cali_handle;
-static bool table_header_printed = false;
+static int sma_buffer[SMA_WINDOW_SIZE];
+static int sma_index = 0;
+static int sma_sum = 0;
+static bool sma_buffer_filled = false;
+static int counter = 0;
+static bool led_is_on = false;
+static const gpio_num_t LED_GPIO = GPIO_NUM_18;
 
-static void print_table_header(void) {
-    printf("RAW   U_manual(mV)   U_cali(mV)   Error(%%)\n");
-    printf("------------------------------------------\n");
-    table_header_printed = true;
+void update_led_state(int sma_value) {
+    if (!led_is_on && sma_value < THRESHOLD_DARK) {
+        led_is_on = true;
+        gpio_set_level(LED_GPIO, 1);
+    } else if (led_is_on && sma_value > THRESHOLD_LIGHT) {
+        led_is_on = false;
+        gpio_set_level(LED_GPIO, 0);
+    }
+}
+
+static void sma_add_value(int raw) {
+    if (!sma_buffer_filled) {
+        sma_buffer[counter] = raw;
+        counter++;
+        sma_sum += raw;
+
+        if (counter >= SMA_WINDOW_SIZE) {
+            sma_buffer_filled = true;
+        }
+    } else {
+        sma_sum -= sma_buffer[sma_index];
+        sma_buffer[sma_index] = raw;
+        sma_sum += raw;
+        sma_index++;
+        if (sma_index % SMA_WINDOW_SIZE == 0) {
+            sma_index = 0;
+        }
+    }
 }
 
 static void adc_read_callback(void* arg) {
     int raw = 0;
     adc_oneshot_read(adc_handle, POT_ADC_CHANNEL, &raw);
 
-    float u_manual_mv = raw * 3300.0f / 4095.0f;
+    sma_add_value(raw);
 
-    int u_cali_mv = 0;
-    adc_cali_raw_to_voltage(cali_handle, raw, &u_cali_mv);
-
-    float error_percent = 0.0f;
-    if (u_cali_mv != 0) {
-        error_percent = fabsf(u_manual_mv - u_cali_mv) / u_cali_mv * 100.0f;
+    int divisor = sma_buffer_filled ? SMA_WINDOW_SIZE : counter;
+    if (divisor > 0) {
+        printf("%4d\n", sma_sum / divisor);
+        update_led_state(sma_sum / divisor);
     }
-
-    if (!table_header_printed) {
-        print_table_header();
-    }
-
-    printf("%4d      %6.1f          %4d        %5.2f\n",
-           raw, u_manual_mv, u_cali_mv, error_percent);
 }
 
 extern "C" void app_main(void) {
@@ -54,15 +70,10 @@ extern "C" void app_main(void) {
     chan_config.atten = ADC_ATTEN;
     adc_oneshot_config_channel(adc_handle, POT_ADC_CHANNEL, &chan_config);
 
-    adc_cali_curve_fitting_config_t cali_config = {};
-    cali_config.unit_id = ADC_UNIT_1;
-    cali_config.chan = POT_ADC_CHANNEL;
-    cali_config.atten = ADC_ATTEN;
-    cali_config.bitwidth = ADC_BITWIDTH_CONFIG;
-    esp_err_t cali_result = adc_cali_create_scheme_curve_fitting(&cali_config, &cali_handle);
-    if (cali_result != ESP_OK) {
-        ESP_LOGE(TAG, "ADC calibration init failed!");
-    }
+    gpio_config_t io_conf = {};
+    io_conf.pin_bit_mask = (1ULL << LED_GPIO);
+    io_conf.mode = GPIO_MODE_OUTPUT;
+    gpio_config(&io_conf);
 
     esp_timer_create_args_t read_timer_args = {};
     esp_timer_handle_t read_timer;
