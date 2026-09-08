@@ -1,0 +1,2 @@
+source E:/embedded-homeworks-esp-idf/build/gdbinit/symbols
+source E:/embedded-homeworks-esp-idf/build/gdbinit/connect
