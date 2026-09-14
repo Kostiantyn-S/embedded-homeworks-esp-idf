@@ -1,12 +1,17 @@
 #pragma once
 
 #include "driver/ledc.h"
+#include "driver/gpio.h"
 
 constexpr static int BUZZER_GPIO = 16;
 constexpr static ledc_timer_t LEDC_TIMER = LEDC_TIMER_0;
 constexpr static ledc_mode_t LEDC_MODE = LEDC_LOW_SPEED_MODE;
 constexpr static ledc_channel_t LEDC_CHANNEL = LEDC_CHANNEL_0;
 constexpr static ledc_timer_bit_t LEDC_DUTY_RES = LEDC_TIMER_10_BIT;
+
+constexpr static gpio_num_t BTN1_GPIO = GPIO_NUM_4;
+constexpr static gpio_num_t BTN2_GPIO = GPIO_NUM_5;
+constexpr static gpio_num_t BTN_BOOT_GPIO = GPIO_NUM_0;
 
 constexpr static int TICK_MS = 50;
 

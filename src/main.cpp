@@ -2,63 +2,10 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/ledc.h"
+#include "driver/gpio.h"
 #include "esp_err.h"
-#include <esp_adc/adc_oneshot.h>
-#include <esp_timer.h>
 
 #include "config.h"
-
-static int current_note_index = 0;
-static int ticks_remaining = 0;
-
-typedef struct {
-    uint16_t freq;     
-    uint16_t duration;  
-} note_t;
-
-/* MARIO */
-// static const note_t melody[] = {
-//     {E5, 3}, {E5, 3}, {REST, 3}, {E5, 3}, {REST, 3}, {C5, 3}, {E5, 3}, {REST, 3},
-//     {G5, 6}, {REST, 6}, {G4, 6}, {REST, 6},
-
-//     {C5, 5}, {REST, 2}, {G4, 5}, {REST, 2}, {E4, 5}, {REST, 2},
-//     {A4, 4}, {B4, 4}, {AS4, 3}, {A4, 4},
-//     {G4, 3}, {E5, 3}, {G5, 3}, {A5, 4}, {F5, 3}, {G5, 3},
-//     {REST, 3}, {E5, 4}, {C5, 3}, {D5, 3}, {B4, 5}, {REST, 3},
-
-//     {C5, 5}, {REST, 2}, {G4, 5}, {REST, 2}, {E4, 5}, {REST, 2},
-//     {A4, 4}, {B4, 4}, {AS4, 3}, {A4, 4},
-//     {G4, 3}, {E5, 3}, {G5, 3}, {A5, 4}, {F5, 3}, {G5, 3},
-//     {REST, 3}, {E5, 4}, {C5, 3}, {D5, 3}, {B4, 5}, {REST, 5},
-
-//     {REST, 4}, {G5, 3}, {FS5, 3}, {F5, 3}, {DS5, 4}, {E5, 4}, {REST, 3},
-//     {GS4, 3}, {A4, 3}, {C5, 3}, {REST, 3}, {A4, 3}, {C5, 3}, {D5, 3},
-//     {REST, 4}, {G5, 3}, {FS5, 3}, {F5, 3}, {DS5, 4}, {E5, 4}, {REST, 3},
-//     {C6, 4}, {REST, 2}, {C6, 3}, {C6, 5}, {REST, 5},
-
-//     {REST, 20}
-// };
-
-/* Police academy */
-static const note_t melody[] = {
-    {C4, 4}, {REST, 2}, {F4, 4}, {REST, 2}, {A4, 4}, {REST, 2},
-    {C5, 6}, {A4, 4}, {F4, 4},
-    {G4, 4}, {REST, 2}, {AS4, 4}, {REST, 2}, {G4, 4},
-    {F4, 8}, {REST, 4},
-
-    {C4, 4}, {F4, 6}, {A4, 4}, {C5, 8},
-    {D5, 4}, {C5, 4}, {AS4, 4}, {A4, 4}, {G4, 6}, {REST, 2},
-    {C4, 4}, {E4, 6}, {G4, 4}, {C5, 8},
-    {D5, 4}, {C5, 4}, {B4, 4}, {C5, 4}, {D5, 6}, {REST, 2},
-
-    {F5, 6}, {E5, 4}, {D5, 4}, {C5, 6}, {A4, 4},
-    {AS4, 4}, {C5, 4}, {D5, 4}, {E5, 4}, {F5, 8},
-    {C5, 4}, {A4, 4}, {G4, 6}, {F4, 10},
-
-    {REST, 20}
-};
-
-#define MELODY_LEN (sizeof(melody) / sizeof(note_t))
 
 static void buzzer_init(void)
 {
@@ -68,7 +15,6 @@ static void buzzer_init(void)
     t.timer_num = LEDC_TIMER;
     t.freq_hz = 2700;
     t.clk_cfg = LEDC_AUTO_CLK;
-
     ESP_ERROR_CHECK(ledc_timer_config(&t));
 
     ledc_channel_config_t c = {};
@@ -78,8 +24,18 @@ static void buzzer_init(void)
     c.timer_sel  = LEDC_TIMER;
     c.duty = 0;
     c.hpoint = 0;
-
     ESP_ERROR_CHECK(ledc_channel_config(&c));
+}
+
+static void buttons_init(void)
+{
+    gpio_config_t io_conf = {};
+    io_conf.intr_type = GPIO_INTR_DISABLE;
+    io_conf.mode = GPIO_MODE_INPUT;
+    io_conf.pin_bit_mask = (1ULL << BTN1_GPIO) | (1ULL << BTN2_GPIO) | (1ULL << BTN_BOOT_GPIO);
+    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
+    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
+    gpio_config(&io_conf);
 }
 
 static void tone_on(uint16_t freq)
@@ -95,41 +51,43 @@ static void tone_off(void)
     ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
 }
 
-static void start_note(const note_t& note) 
-{
-    if (note.freq == REST) {
-        tone_off();
-    } else {
-        tone_on(note.freq);
-    }
-    ticks_remaining = note.duration;
-}
-
-static void player_tick_callback(void* arg) {
-    ticks_remaining--;
-
-    if (ticks_remaining <= 0) {
-        current_note_index++;
-        if (current_note_index >= MELODY_LEN) {
-            current_note_index = 0;
-        }
-        start_note(melody[current_note_index]);
-    }
-}
-
 extern "C" void app_main(void)
 {
     buzzer_init();
-    start_note(melody[0]);
+    buttons_init();
 
-    esp_timer_handle_t player_timer;
-    esp_timer_create_args_t player_timer_args = {};
-    player_timer_args.callback = &player_tick_callback;
-    player_timer_args.name = "player_timer";
-    esp_timer_create(&player_timer_args, &player_timer);
-    esp_timer_start_periodic(player_timer, TICK_MS * 1000);
+    uint16_t current_freq = REST;
 
     while (true) {
-        vTaskDelay(pdMS_TO_TICKS(1000));
+        bool btn1_pressed = (gpio_get_level(BTN1_GPIO) == 0);
+        bool btn2_pressed = (gpio_get_level(BTN2_GPIO) == 0);
+        bool boot_pressed = (gpio_get_level(BTN_BOOT_GPIO) == 0);
+
+        uint16_t target_freq = REST;
+
+        if (btn1_pressed && btn2_pressed) {
+            target_freq = F4;
+        } else if (btn2_pressed && boot_pressed) {
+            target_freq = G4;
+        } else if (btn1_pressed && boot_pressed) {
+            target_freq = A4;
+        } else if (btn1_pressed) {
+            target_freq = C4;
+        } else if (btn2_pressed) {
+            target_freq = D4;
+        } else if (boot_pressed) {
+            target_freq = E4;
+        }
+
+        if (target_freq != current_freq) {
+            current_freq = target_freq;
+            if (current_freq == REST) {
+                tone_off();
+            } else {
+                tone_on(current_freq);
+            }
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
