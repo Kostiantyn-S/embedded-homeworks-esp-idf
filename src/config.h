@@ -8,6 +8,8 @@ constexpr static ledc_mode_t LEDC_MODE = LEDC_LOW_SPEED_MODE;
 constexpr static ledc_channel_t LEDC_CHANNEL = LEDC_CHANNEL_0;
 constexpr static ledc_timer_bit_t LEDC_DUTY_RES = LEDC_TIMER_10_BIT;
 
+constexpr static int TICK_MS = 50;
+
 constexpr static int REST = 0;
 constexpr static int NOTE_C7 = 2093;
 constexpr static int NOTE_D7 = 2349;
