@@ -2,92 +2,97 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "driver/ledc.h"
-#include "driver/gpio.h"
+#include "esp_adc/adc_oneshot.h"
 #include "esp_err.h"
+#include "esp_log.h"
 
 #include "config.h"
 
-static void buzzer_init(void)
+static adc_oneshot_unit_handle_t adc1;
+
+static bool is_within_servo_range(float pot_angle) {
+    return pot_angle >= POT_SERVO_MIN_DEG && pot_angle <= POT_SERVO_MAX_DEG;
+}
+
+static float pot_angle_to_servo_angle(float pot_angle) {
+    return pot_angle - POT_SERVO_MIN_DEG;
+}
+
+static float pot_raw_to_angle(int raw) {
+    return (raw / 4095.0f) * POT_MAX_DEGREES;
+}
+
+static uint32_t angle_to_us(float servo_angle) {
+    return SERVO_MIN_US + (uint32_t)((servo_angle / SERVO_MAX_DEGREES) * (SERVO_MAX_US - SERVO_MIN_US));
+}
+
+static void servo_init(void)
 {
     ledc_timer_config_t t = {};
     t.speed_mode = LEDC_MODE;
-    t.duty_resolution = LEDC_DUTY_RES;
     t.timer_num = LEDC_TIMER;
-    t.freq_hz = 2700;
+    t.duty_resolution = LEDC_DUTY_RES;
+    t.freq_hz = 50;
     t.clk_cfg = LEDC_AUTO_CLK;
     ESP_ERROR_CHECK(ledc_timer_config(&t));
 
     ledc_channel_config_t c = {};
-    c.gpio_num = BUZZER_GPIO;
+    c.gpio_num = SERVO_GPIO;
     c.speed_mode = LEDC_MODE;
     c.channel = LEDC_CHANNEL;
-    c.timer_sel  = LEDC_TIMER;
+    c.timer_sel = LEDC_TIMER;
     c.duty = 0;
     c.hpoint = 0;
     ESP_ERROR_CHECK(ledc_channel_config(&c));
 }
 
-static void buttons_init(void)
+static void pot_init(void)
 {
-    gpio_config_t io_conf = {};
-    io_conf.intr_type = GPIO_INTR_DISABLE;
-    io_conf.mode = GPIO_MODE_INPUT;
-    io_conf.pin_bit_mask = (1ULL << BTN1_GPIO) | (1ULL << BTN2_GPIO) | (1ULL << BTN_BOOT_GPIO);
-    io_conf.pull_down_en = GPIO_PULLDOWN_DISABLE;
-    io_conf.pull_up_en = GPIO_PULLUP_ENABLE;
-    gpio_config(&io_conf);
+    adc_oneshot_unit_init_cfg_t ucfg = {};
+    ucfg.unit_id = ADC_UNIT_1;
+    adc_oneshot_new_unit(&ucfg, &adc1);
+
+    adc_oneshot_chan_cfg_t ccf = {};
+    ccf.atten = ADC_ATTEN_DB_12;
+    ccf.bitwidth = ADC_BITWIDTH_DEFAULT;
+    adc_oneshot_config_channel(adc1, POT_CHANNEL, &ccf);
 }
 
-static void tone_on(uint16_t freq)
+static void servo_set_us(uint32_t us)
 {
-    ledc_set_freq(LEDC_MODE, LEDC_TIMER, freq);
-    ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, 512);
-    ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
-}
+    if (us > 2600) us = 2600;
+    if (us < 400) us = 400;
 
-static void tone_off(void)
-{
-    ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, 0);
-    ledc_update_duty(LEDC_MODE, LEDC_CHANNEL);
+    uint32_t duty = (uint32_t)(((uint64_t)us * SERVO_MAX_DUTY) / SERVO_PERIOD_US);
+
+    ESP_ERROR_CHECK(ledc_set_duty(LEDC_MODE, LEDC_CHANNEL, duty));
+    ESP_ERROR_CHECK(ledc_update_duty(LEDC_MODE, LEDC_CHANNEL));
 }
 
 extern "C" void app_main(void)
 {
-    buzzer_init();
-    buttons_init();
+    servo_init();
+    pot_init();
 
-    uint16_t current_freq = REST;
+    while (1)
+    {
+        int raw = 0;
+        adc_oneshot_read(adc1, POT_CHANNEL, &raw);
 
-    while (true) {
-        bool btn1_pressed = (gpio_get_level(BTN1_GPIO) == 0);
-        bool btn2_pressed = (gpio_get_level(BTN2_GPIO) == 0);
-        bool boot_pressed = (gpio_get_level(BTN_BOOT_GPIO) == 0);
+        float pot_angle = pot_raw_to_angle(raw);
 
-        uint16_t target_freq = REST;
-
-        if (btn1_pressed && btn2_pressed) {
-            target_freq = F4;
-        } else if (btn2_pressed && boot_pressed) {
-            target_freq = G4;
-        } else if (btn1_pressed && boot_pressed) {
-            target_freq = A4;
-        } else if (btn1_pressed) {
-            target_freq = C4;
-        } else if (btn2_pressed) {
-            target_freq = D4;
-        } else if (boot_pressed) {
-            target_freq = E4;
+        if (is_within_servo_range(pot_angle)) {
+            float servo_angle = pot_angle_to_servo_angle(pot_angle);
+            uint32_t us = angle_to_us(servo_angle);
+            servo_set_us(us);
+            ESP_LOGI("SERVO", "servo angle: %.1f deg (us: %lu)", servo_angle, us);
+        } else {
+            float clamped_servo_angle = (pot_angle < POT_SERVO_MIN_DEG) ? 0.0f : SERVO_MAX_DEGREES;
+            uint32_t us = angle_to_us(clamped_servo_angle);
+            servo_set_us(us);
+            ESP_LOGI("SERVO", "pot angle: %.1f deg - поза діапазоном серво мотора", pot_angle);
         }
 
-        if (target_freq != current_freq) {
-            current_freq = target_freq;
-            if (current_freq == REST) {
-                tone_off();
-            } else {
-                tone_on(current_freq);
-            }
-        }
-
-        vTaskDelay(pdMS_TO_TICKS(10));
+        vTaskDelay(pdMS_TO_TICKS(20));
     }
 }
